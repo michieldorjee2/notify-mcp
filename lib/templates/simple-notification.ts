@@ -83,6 +83,7 @@ function render(variables: SimpleNotificationVars): RenderedCard {
       $schema: "http://adaptivecards.io/schemas/adaptive-card.json",
       type: "AdaptiveCard",
       version: "1.4",
+      fallbackText: `${variables.title}: ${variables.message}`,
       body,
       ...(actions.length > 0 ? { actions } : {}),
     },
