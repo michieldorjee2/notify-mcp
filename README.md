@@ -1,36 +1,95 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# notify-mcp
 
-## Getting Started
+A universal notification MCP server deployed on Vercel. Send adaptive cards to MS Teams (and more channels coming soon) via a single `send_notification` tool.
 
-First, run the development server:
+## Features
 
-```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+- **Template-driven**: Add new notification templates server-side without clients needing to rediscover tools
+- **Channel-agnostic**: Starts with MS Teams, designed for easy expansion to email, Slack, etc.
+- **Serverless**: Runs on Vercel with Streamable HTTP transport
+- **Adaptive Card support**: Full Teams-compatible adaptive card rendering (spec v1.5)
+
+## MCP Tools
+
+### `send_notification`
+
+Send a notification through a channel using a template.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `channel` | `"teams"` | Yes | Channel to send through |
+| `webhook_url` | string (URL) | Yes | Webhook URL for the channel |
+| `template` | string | No | Template name (default: `"simple-notification"`) |
+| `variables` | object | Yes | Template-specific variables |
+
+**Default template variables** (`simple-notification`):
+
+| Variable | Type | Required | Description |
+|----------|------|----------|-------------|
+| `title` | string | Yes | Card title (max 200 chars) |
+| `message` | string | Yes | Card body (max 2000 chars) |
+| `facts` | `[{title, value}]` | No | Key-value fact table |
+| `actionUrl` | string (URL) | No | Button link |
+| `actionTitle` | string | No | Button label (default: "Open") |
+| `severity` | `info\|success\|warning\|error` | No | Title color (default: "info") |
+
+### `list_templates`
+
+List all available templates with their descriptions and expected variables.
+
+## Setup
+
+### 1. MS Teams Webhook
+
+Create an incoming webhook in your Teams channel:
+- In Teams, go to the channel > Manage channel > Connectors > Incoming Webhook
+- Or use Power Automate: create a flow with "When a Teams webhook request is received" trigger
+
+### 2. Connect your MCP client
+
+For Streamable HTTP clients (Claude Code, Cursor, etc.):
+
+```json
+{
+  "mcpServers": {
+    "notify": {
+      "url": "https://your-deployment.vercel.app/api/mcp"
+    }
+  }
+}
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+## Development
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+```bash
+npm install
+npm run dev     # Start dev server on :3000
+npm test        # Run tests
+npm run build   # Production build
+```
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+## Adding Templates
 
-## Learn More
+1. Create `lib/templates/my-template.ts` implementing `NotificationTemplate`
+2. Import and register it in `lib/templates/index.ts`
+3. Deploy. Clients use it via `template: "my-template"` — no tool rediscovery needed.
 
-To learn more about Next.js, take a look at the following resources:
+## Adding Channels
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+1. Add the channel name to `CHANNELS` in `lib/types.ts`
+2. Add a `ChannelConfig` variant
+3. Create `lib/channels/my-channel.ts` implementing `NotificationChannel`
+4. Register in `lib/channels/index.ts`
+5. Deploy. Clients see the new channel on next tool discovery.
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+## Architecture
 
-## Deploy on Vercel
-
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+```
+app/api/[transport]/route.ts  ─── MCP handler (mcp-handler)
+                                     │
+                              lib/tools/send-notification.ts
+                                     │
+                    ┌────────────────┼────────────────┐
+              lib/templates/     lib/channels/
+              (render card)      (deliver card)
+```
