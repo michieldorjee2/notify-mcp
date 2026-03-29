@@ -13,7 +13,6 @@
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.26.0",
     "@vercel/kv": "^3.0.0",
-    "botbuilder": "^4.23.3",
     "mcp-handler": "^1.1.0",
     "next": "16.2.1",
     "react": "19.2.4",

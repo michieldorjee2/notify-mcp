@@ -5,37 +5,28 @@ const PIN_PREFIX = "pin:";
 
 /**
  * Generate a cryptographically random 6-character alphanumeric PIN.
- * Uses uppercase for readability when shared verbally.
+ * Uppercase for readability.
  */
 export function generatePIN(): string {
   return crypto.randomBytes(4).toString("hex").slice(0, 6).toUpperCase();
 }
 
 /**
- * Store a ConversationReference keyed by PIN. No TTL — PINs persist
- * until explicitly deleted or the bot is removed from the conversation.
+ * Store a webhook URL keyed by PIN. No TTL — persists until deleted.
  */
-export async function savePIN(
-  pin: string,
-  reference: Record<string, unknown>
-): Promise<void> {
-  await kv.set(`${PIN_PREFIX}${pin}`, JSON.stringify(reference));
+export async function savePIN(pin: string, webhookUrl: string): Promise<void> {
+  await kv.set(`${PIN_PREFIX}${pin}`, webhookUrl);
 }
 
 /**
- * Retrieve a ConversationReference by PIN.
- * Returns null if the PIN doesn't exist.
+ * Retrieve a webhook URL by PIN.
  */
-export async function getReference(
-  pin: string
-): Promise<Record<string, unknown> | null> {
-  const data = await kv.get<string>(`${PIN_PREFIX}${pin}`);
-  if (!data) return null;
-  return typeof data === "string" ? JSON.parse(data) : data;
+export async function getWebhookUrl(pin: string): Promise<string | null> {
+  return kv.get<string>(`${PIN_PREFIX}${pin}`);
 }
 
 /**
- * Delete a PIN (e.g. when bot is removed from conversation).
+ * Delete a PIN.
  */
 export async function deletePIN(pin: string): Promise<void> {
   await kv.del(`${PIN_PREFIX}${pin}`);

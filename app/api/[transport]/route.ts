@@ -4,6 +4,10 @@ import {
   sendNotificationSchema,
   handleSendNotification,
 } from "@/lib/tools/send-notification";
+import {
+  registerWebhookSchema,
+  handleRegisterWebhook,
+} from "@/lib/tools/register-webhook";
 import { handleListTemplates } from "@/lib/tools/list-templates";
 import { isValidToken } from "@/lib/auth";
 
@@ -11,9 +15,16 @@ const handler = createMcpHandler(
   (server) => {
     server.tool(
       "send_notification",
-      "Send a notification through a configured channel (e.g. MS Teams). Uses adaptive card templates that can be customized server-side. Use list_templates to discover available templates and their variables.",
+      "Send a notification through a configured channel (e.g. MS Teams). Uses adaptive card templates that can be customized server-side. Requires either a PIN (from register_webhook) or a direct webhook_url.",
       sendNotificationSchema,
       async (input) => handleSendNotification(input)
+    );
+
+    server.tool(
+      "register_webhook",
+      "Register a webhook URL and get a short PIN. Use the PIN with send_notification instead of pasting the full URL each time. For Teams, create a Power Automate Workflow and paste the URL here.",
+      registerWebhookSchema,
+      async (input) => handleRegisterWebhook(input)
     );
 
     server.tool(

@@ -10,15 +10,6 @@ vi.mock("@vercel/kv", () => ({
   },
 }));
 
-// Mock botbuilder adapter — use a stable reference via getter
-const _continueConversation = vi.fn();
-vi.mock("@/lib/bot", () => ({
-  get adapter() {
-    return { continueConversation: _continueConversation };
-  },
-  bot: {},
-}));
-
 import { teamsChannel } from "@/lib/channels/teams";
 import { kv } from "@vercel/kv";
 
@@ -33,102 +24,112 @@ const mockCard: RenderedCard = {
   },
 };
 
-const config: TeamsChannelConfig = {
-  channel: "teams",
-  pin: "ABC123",
-};
-
-const fakeReference = {
-  activityId: "1",
-  user: { id: "user1" },
-  bot: { id: "bot1" },
-  conversation: { id: "conv1" },
-  serviceUrl: "https://smba.trafficmanager.net/teams/",
-};
-
 beforeEach(() => {
-  vi.clearAllMocks();
+  vi.restoreAllMocks();
 });
 
-describe("teams channel (bot framework)", () => {
-  it("looks up ConversationReference by PIN and sends card", async () => {
-    vi.mocked(kv.get).mockResolvedValue(fakeReference);
-    _continueConversation.mockImplementation(
-      async (_ref: unknown, callback: (ctx: unknown) => Promise<void>) => {
-        await callback({ sendActivity: vi.fn() });
-      }
-    );
+describe("teams channel", () => {
+  describe("with direct webhook_url", () => {
+    const config: TeamsChannelConfig = {
+      channel: "teams",
+      webhookUrl: "https://webhook.example.com/test",
+    };
 
-    const result = await teamsChannel.send(mockCard, config);
+    it("sends correctly formatted Teams envelope", async () => {
+      const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+        new Response("1", { status: 200 })
+      );
 
-    expect(kv.get).toHaveBeenCalledWith("pin:ABC123");
-    expect(_continueConversation).toHaveBeenCalledOnce();
-    expect(result.success).toBe(true);
-    expect(result.channel).toBe("teams");
+      await teamsChannel.send(mockCard, config);
+
+      const body = JSON.parse(fetchSpy.mock.calls[0][1]?.body as string);
+      expect(body.type).toBe("message");
+      expect(body.attachments[0].contentType).toBe(
+        "application/vnd.microsoft.card.adaptive"
+      );
+      expect(body.attachments[0].content.type).toBe("AdaptiveCard");
+    });
+
+    it("returns success on 200", async () => {
+      vi.spyOn(globalThis, "fetch").mockResolvedValue(
+        new Response("1", { status: 200 })
+      );
+
+      const result = await teamsChannel.send(mockCard, config);
+      expect(result.success).toBe(true);
+    });
+
+    it("detects rate limiting", async () => {
+      vi.spyOn(globalThis, "fetch").mockResolvedValue(
+        new Response("Microsoft Teams endpoint returned HTTP error 429", {
+          status: 200,
+        })
+      );
+
+      const result = await teamsChannel.send(mockCard, config);
+      expect(result.success).toBe(false);
+      expect(result.statusCode).toBe(429);
+    });
+
+    it("handles non-200 responses", async () => {
+      vi.spyOn(globalThis, "fetch").mockResolvedValue(
+        new Response("Unauthorized", { status: 401 })
+      );
+
+      const result = await teamsChannel.send(mockCard, config);
+      expect(result.success).toBe(false);
+      expect(result.statusCode).toBe(401);
+    });
+
+    it("rejects payloads exceeding 28KB", async () => {
+      const largeCard: RenderedCard = {
+        adaptiveCard: {
+          ...mockCard.adaptiveCard,
+          body: [{ type: "TextBlock", text: "x".repeat(30 * 1024) }],
+        },
+      };
+
+      const result = await teamsChannel.send(largeCard, config);
+      expect(result.success).toBe(false);
+      expect(result.error).toContain("exceeds Teams limit");
+    });
+
+    it("handles network errors", async () => {
+      vi.spyOn(globalThis, "fetch").mockRejectedValue(
+        new Error("DNS resolution failed")
+      );
+
+      const result = await teamsChannel.send(mockCard, config);
+      expect(result.success).toBe(false);
+      expect(result.error).toContain("DNS resolution failed");
+    });
   });
 
-  it("sends adaptive card attachment via proactive message", async () => {
-    vi.mocked(kv.get).mockResolvedValue(fakeReference);
-    let sentActivity: Record<string, unknown> | undefined;
-    _continueConversation.mockImplementation(
-      async (_ref: unknown, callback: (ctx: unknown) => Promise<void>) => {
-        await callback({
-          sendActivity: vi.fn((activity: Record<string, unknown>) => {
-            sentActivity = activity;
-          }),
-        });
-      }
-    );
+  describe("with PIN", () => {
+    const config: TeamsChannelConfig = {
+      channel: "teams",
+      pin: "ABC123",
+    };
 
-    await teamsChannel.send(mockCard, config);
+    it("looks up webhook URL by PIN and sends", async () => {
+      vi.mocked(kv.get).mockResolvedValue("https://webhook.example.com/stored");
+      vi.spyOn(globalThis, "fetch").mockResolvedValue(
+        new Response("1", { status: 200 })
+      );
 
-    expect(sentActivity).toBeDefined();
-    const attachments = sentActivity!.attachments as Array<{
-      contentType: string;
-      content: unknown;
-    }>;
-    expect(attachments[0].contentType).toBe(
-      "application/vnd.microsoft.card.adaptive"
-    );
-    expect(attachments[0].content).toEqual(mockCard.adaptiveCard);
-  });
+      const result = await teamsChannel.send(mockCard, config);
 
-  it("returns error when PIN not found", async () => {
-    vi.mocked(kv.get).mockResolvedValue(null);
+      expect(kv.get).toHaveBeenCalledWith("pin:ABC123");
+      expect(result.success).toBe(true);
+    });
 
-    const result = await teamsChannel.send(mockCard, config);
+    it("returns error when PIN not found", async () => {
+      vi.mocked(kv.get).mockResolvedValue(null);
 
-    expect(result.success).toBe(false);
-    expect(result.error).toContain('PIN "ABC123" not found');
-  });
+      const result = await teamsChannel.send(mockCard, config);
 
-  it("handles bot authentication errors", async () => {
-    vi.mocked(kv.get).mockResolvedValue(fakeReference);
-    _continueConversation.mockRejectedValue(new Error("401 Unauthorized"));
-
-    const result = await teamsChannel.send(mockCard, config);
-
-    expect(result.success).toBe(false);
-    expect(result.statusCode).toBe(401);
-  });
-
-  it("handles bot removed from conversation (403)", async () => {
-    vi.mocked(kv.get).mockResolvedValue(fakeReference);
-    _continueConversation.mockRejectedValue(new Error("403 Forbidden"));
-
-    const result = await teamsChannel.send(mockCard, config);
-
-    expect(result.success).toBe(false);
-    expect(result.statusCode).toBe(403);
-  });
-
-  it("handles generic errors", async () => {
-    vi.mocked(kv.get).mockResolvedValue(fakeReference);
-    _continueConversation.mockRejectedValue(new Error("Network timeout"));
-
-    const result = await teamsChannel.send(mockCard, config);
-
-    expect(result.success).toBe(false);
-    expect(result.error).toContain("Network timeout");
+      expect(result.success).toBe(false);
+      expect(result.error).toContain('PIN "ABC123" not found');
+    });
   });
 });

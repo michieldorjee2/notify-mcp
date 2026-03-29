@@ -4,9 +4,22 @@ import type {
   ChannelConfig,
   SendResult,
 } from "@/lib/types";
-import type { ConversationReference } from "botbuilder";
-import { adapter } from "@/lib/bot";
-import { getReference } from "@/lib/store";
+import { getWebhookUrl } from "@/lib/store";
+
+const MAX_PAYLOAD_BYTES = 28 * 1024; // 28KB Teams limit
+
+function buildTeamsPayload(card: RenderedCard): string {
+  return JSON.stringify({
+    type: "message",
+    attachments: [
+      {
+        contentType: "application/vnd.microsoft.card.adaptive",
+        contentUrl: null,
+        content: card.adaptiveCard,
+      },
+    ],
+  });
+}
 
 export const teamsChannel: NotificationChannel = {
   name: "teams",
@@ -20,59 +33,73 @@ export const teamsChannel: NotificationChannel = {
       };
     }
 
-    // Look up ConversationReference by PIN
-    const reference = await getReference(config.pin);
-    if (!reference) {
+    // Resolve webhook URL: either directly provided or looked up via PIN
+    let webhookUrl: string;
+    if ("webhookUrl" in config && config.webhookUrl) {
+      webhookUrl = config.webhookUrl;
+    } else if ("pin" in config && config.pin) {
+      const url = await getWebhookUrl(config.pin);
+      if (!url) {
+        return {
+          success: false,
+          channel: "teams",
+          error: `PIN "${config.pin}" not found. Use register_webhook to register a webhook URL first.`,
+        };
+      }
+      webhookUrl = url;
+    } else {
       return {
         success: false,
         channel: "teams",
-        error: `PIN "${config.pin}" not found. Install the bot in Teams first to get a PIN.`,
+        error: "Either pin or webhook_url is required",
+      };
+    }
+
+    const body = buildTeamsPayload(card);
+
+    // Pre-flight size check
+    const byteLength = new TextEncoder().encode(body).length;
+    if (byteLength > MAX_PAYLOAD_BYTES) {
+      return {
+        success: false,
+        channel: "teams",
+        error: `Payload size ${byteLength} bytes exceeds Teams limit of ${MAX_PAYLOAD_BYTES} bytes`,
       };
     }
 
     try {
-      await adapter.continueConversation(
-        reference as Partial<ConversationReference>,
-        async (context) => {
-          await context.sendActivity({
-            attachments: [
-              {
-                contentType: "application/vnd.microsoft.card.adaptive",
-                content: card.adaptiveCard,
-              },
-            ],
-          });
-        }
-      );
+      const response = await fetch(webhookUrl, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body,
+      });
 
-      return { success: true, channel: "teams" };
+      const responseText = await response.text();
+
+      if (!response.ok) {
+        return {
+          success: false,
+          channel: "teams",
+          error: `Teams webhook returned HTTP ${response.status}: ${responseText}`,
+          statusCode: response.status,
+        };
+      }
+
+      if (responseText.includes("429")) {
+        return {
+          success: false,
+          channel: "teams",
+          error: "Teams webhook rate limited (429)",
+          statusCode: 429,
+        };
+      }
+
+      return { success: true, channel: "teams", statusCode: response.status };
     } catch (err) {
-      const message =
-        err instanceof Error ? err.message : String(err);
-
-      // Detect common errors
-      if (message.includes("401") || message.includes("Unauthorized")) {
-        return {
-          success: false,
-          channel: "teams",
-          error: "Bot authentication failed. Check BOT_APP_ID and BOT_APP_PASSWORD.",
-          statusCode: 401,
-        };
-      }
-
-      if (message.includes("403") || message.includes("Forbidden")) {
-        return {
-          success: false,
-          channel: "teams",
-          error: "Bot was removed from the conversation. Ask the user to reinstall and get a new PIN.",
-          statusCode: 403,
-        };
-      }
-
       return {
         success: false,
         channel: "teams",
-        error: `Proactive message failed: ${message}`,
+        error: `Network error: ${err instanceof Error ? err.message : String(err)}`,
       };
     }
   },
