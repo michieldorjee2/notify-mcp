@@ -1,10 +1,11 @@
-import { createMcpHandler } from "mcp-handler";
-import { z } from "zod";
+import { createMcpHandler, withMcpAuth } from "mcp-handler";
+import type { AuthInfo } from "@modelcontextprotocol/sdk/server/auth/types.js";
 import {
   sendNotificationSchema,
   handleSendNotification,
 } from "@/lib/tools/send-notification";
 import { handleListTemplates } from "@/lib/tools/list-templates";
+import { isValidToken } from "@/lib/auth";
 
 const handler = createMcpHandler(
   (server) => {
@@ -33,4 +34,21 @@ const handler = createMcpHandler(
   }
 );
 
-export { handler as GET, handler as POST, handler as DELETE };
+const verifyToken = async (
+  _req: Request,
+  bearerToken?: string
+): Promise<AuthInfo | undefined> => {
+  if (!isValidToken(bearerToken)) return undefined;
+  return {
+    token: bearerToken!,
+    scopes: ["notify"],
+    clientId: "mcp-client",
+  };
+};
+
+const authHandler = withMcpAuth(handler, verifyToken, {
+  required: true,
+  resourceMetadataPath: "/.well-known/oauth-protected-resource",
+});
+
+export { authHandler as GET, authHandler as POST, authHandler as DELETE };
