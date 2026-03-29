@@ -7,10 +7,13 @@ export const sendNotificationSchema = {
   channel: z
     .enum(CHANNELS)
     .describe("Notification channel to send through (e.g. 'teams')"),
-  webhook_url: z
+  pin: z
     .string()
-    .url()
-    .describe("Webhook URL for the target channel"),
+    .min(1)
+    .describe(
+      "The PIN provided when the bot was installed in the target Teams conversation. " +
+        "Install the Notification Bot in Teams to get a PIN."
+    ),
   template: z
     .string()
     .default("simple-notification")
@@ -26,7 +29,7 @@ export const sendNotificationSchema = {
 
 export async function handleSendNotification(input: {
   channel: (typeof CHANNELS)[number];
-  webhook_url: string;
+  pin: string;
   template: string;
   variables: Record<string, unknown>;
 }) {
@@ -69,7 +72,7 @@ export async function handleSendNotification(input: {
   // Send via channel
   const result = await sendToChannel(input.channel, card, {
     channel: input.channel,
-    webhookUrl: input.webhook_url,
+    pin: input.pin,
   } as never);
 
   if (!result.success) {

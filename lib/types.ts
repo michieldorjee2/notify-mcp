@@ -140,7 +140,7 @@ export interface SendResult {
 
 export interface TeamsChannelConfig {
   channel: "teams";
-  webhookUrl: string;
+  pin: string;
 }
 
 // Add more channel configs here as discriminated union members

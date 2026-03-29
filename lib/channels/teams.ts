@@ -4,21 +4,9 @@ import type {
   ChannelConfig,
   SendResult,
 } from "@/lib/types";
-
-const MAX_PAYLOAD_BYTES = 28 * 1024; // 28KB Teams limit
-
-function buildTeamsPayload(card: RenderedCard): string {
-  return JSON.stringify({
-    type: "message",
-    attachments: [
-      {
-        contentType: "application/vnd.microsoft.card.adaptive",
-        contentUrl: null,
-        content: card.adaptiveCard,
-      },
-    ],
-  });
-}
+import type { ConversationReference } from "botbuilder";
+import { adapter } from "@/lib/bot";
+import { getReference } from "@/lib/store";
 
 export const teamsChannel: NotificationChannel = {
   name: "teams",
@@ -32,53 +20,59 @@ export const teamsChannel: NotificationChannel = {
       };
     }
 
-    const body = buildTeamsPayload(card);
-
-    // Pre-flight size check
-    const byteLength = new TextEncoder().encode(body).length;
-    if (byteLength > MAX_PAYLOAD_BYTES) {
+    // Look up ConversationReference by PIN
+    const reference = await getReference(config.pin);
+    if (!reference) {
       return {
         success: false,
         channel: "teams",
-        error: `Payload size ${byteLength} bytes exceeds Teams limit of ${MAX_PAYLOAD_BYTES} bytes`,
+        error: `PIN "${config.pin}" not found. Install the bot in Teams first to get a PIN.`,
       };
     }
 
     try {
-      const response = await fetch(config.webhookUrl, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body,
-      });
+      await adapter.continueConversation(
+        reference as Partial<ConversationReference>,
+        async (context) => {
+          await context.sendActivity({
+            attachments: [
+              {
+                contentType: "application/vnd.microsoft.card.adaptive",
+                content: card.adaptiveCard,
+              },
+            ],
+          });
+        }
+      );
 
-      // Teams returns 200 even on some errors — check response text
-      const responseText = await response.text();
-
-      if (!response.ok) {
-        return {
-          success: false,
-          channel: "teams",
-          error: `Teams webhook returned HTTP ${response.status}: ${responseText}`,
-          statusCode: response.status,
-        };
-      }
-
-      // Teams rate limit is embedded in 200 response body
-      if (responseText.includes("429")) {
-        return {
-          success: false,
-          channel: "teams",
-          error: "Teams webhook rate limited (429)",
-          statusCode: 429,
-        };
-      }
-
-      return { success: true, channel: "teams", statusCode: response.status };
+      return { success: true, channel: "teams" };
     } catch (err) {
+      const message =
+        err instanceof Error ? err.message : String(err);
+
+      // Detect common errors
+      if (message.includes("401") || message.includes("Unauthorized")) {
+        return {
+          success: false,
+          channel: "teams",
+          error: "Bot authentication failed. Check BOT_APP_ID and BOT_APP_PASSWORD.",
+          statusCode: 401,
+        };
+      }
+
+      if (message.includes("403") || message.includes("Forbidden")) {
+        return {
+          success: false,
+          channel: "teams",
+          error: "Bot was removed from the conversation. Ask the user to reinstall and get a new PIN.",
+          statusCode: 403,
+        };
+      }
+
       return {
         success: false,
         channel: "teams",
-        error: `Network error: ${err instanceof Error ? err.message : String(err)}`,
+        error: `Proactive message failed: ${message}`,
       };
     }
   },

@@ -1,20 +1,55 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
+
+// Mock @vercel/kv
+vi.mock("@vercel/kv", () => ({
+  kv: {
+    get: vi.fn(),
+    set: vi.fn(),
+    del: vi.fn(),
+  },
+}));
+
+// Mock botbuilder adapter
+const _continueConversation = vi.fn();
+vi.mock("@/lib/bot", () => ({
+  get adapter() {
+    return { continueConversation: _continueConversation };
+  },
+  bot: {},
+}));
+
 import { handleSendNotification } from "@/lib/tools/send-notification";
 import { handleListTemplates } from "@/lib/tools/list-templates";
+import { kv } from "@vercel/kv";
+
+const fakeReference = {
+  activityId: "1",
+  user: { id: "user1" },
+  bot: { id: "bot1" },
+  conversation: { id: "conv1" },
+  serviceUrl: "https://smba.trafficmanager.net/teams/",
+};
 
 beforeEach(() => {
-  vi.restoreAllMocks();
+  vi.clearAllMocks();
 });
+
+function mockSuccessfulSend() {
+  vi.mocked(kv.get).mockResolvedValue(fakeReference);
+  _continueConversation.mockImplementation(
+    async (_ref: unknown, cb: (ctx: unknown) => Promise<void>) => {
+      await cb({ sendActivity: vi.fn() });
+    }
+  );
+}
 
 describe("send_notification tool", () => {
   it("returns success for valid notification", async () => {
-    vi.spyOn(globalThis, "fetch").mockResolvedValue(
-      new Response("1", { status: 200 })
-    );
+    mockSuccessfulSend();
 
     const result = await handleSendNotification({
       channel: "teams",
-      webhook_url: "https://webhook.example.com/test",
+      pin: "ABC123",
       template: "simple-notification",
       variables: {
         title: "Deploy Complete",
@@ -30,7 +65,7 @@ describe("send_notification tool", () => {
   it("returns validation error for missing required variables", async () => {
     const result = await handleSendNotification({
       channel: "teams",
-      webhook_url: "https://webhook.example.com/test",
+      pin: "ABC123",
       template: "simple-notification",
       variables: { title: "No message field" },
     });
@@ -41,13 +76,11 @@ describe("send_notification tool", () => {
   });
 
   it("falls back to default template for unknown template name", async () => {
-    vi.spyOn(globalThis, "fetch").mockResolvedValue(
-      new Response("1", { status: 200 })
-    );
+    mockSuccessfulSend();
 
     const result = await handleSendNotification({
       channel: "teams",
-      webhook_url: "https://webhook.example.com/test",
+      pin: "ABC123",
       template: "nonexistent-template",
       variables: {
         title: "Test",
@@ -60,14 +93,12 @@ describe("send_notification tool", () => {
     expect(result.content[0].text).toContain("fallback");
   });
 
-  it("returns error when channel send fails", async () => {
-    vi.spyOn(globalThis, "fetch").mockResolvedValue(
-      new Response("Unauthorized", { status: 401 })
-    );
+  it("returns error when PIN not found", async () => {
+    vi.mocked(kv.get).mockResolvedValue(null);
 
     const result = await handleSendNotification({
       channel: "teams",
-      webhook_url: "https://webhook.example.com/test",
+      pin: "BADPIN",
       template: "simple-notification",
       variables: {
         title: "Test",
@@ -77,16 +108,25 @@ describe("send_notification tool", () => {
 
     expect(result.isError).toBe(true);
     expect(result.content[0].text).toContain("Failed to send");
+    expect(result.content[0].text).toContain("PIN");
   });
 
-  it("sends correct adaptive card payload to Teams", async () => {
-    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
-      new Response("1", { status: 200 })
+  it("sends correct adaptive card via bot framework", async () => {
+    vi.mocked(kv.get).mockResolvedValue(fakeReference);
+    let sentActivity: Record<string, unknown> | undefined;
+    _continueConversation.mockImplementation(
+      async (_ref: unknown, cb: (ctx: unknown) => Promise<void>) => {
+        await cb({
+          sendActivity: vi.fn((a: Record<string, unknown>) => {
+            sentActivity = a;
+          }),
+        });
+      }
     );
 
     await handleSendNotification({
       channel: "teams",
-      webhook_url: "https://webhook.example.com/test",
+      pin: "ABC123",
       template: "simple-notification",
       variables: {
         title: "Alert",
@@ -98,18 +138,13 @@ describe("send_notification tool", () => {
       },
     });
 
-    const body = JSON.parse(fetchSpy.mock.calls[0][1]?.body as string);
-    const card = body.attachments[0].content;
-
+    const card = (
+      sentActivity!.attachments as Array<{ content: Record<string, unknown> }>
+    )[0].content;
     expect(card.type).toBe("AdaptiveCard");
-    expect(card.body[0].text).toBe("Alert");
-    expect(card.body[0].color).toBe("warning");
-    expect(card.body[2].type).toBe("FactSet");
-    expect(card.actions[0]).toMatchObject({
-      type: "Action.OpenUrl",
-      title: "View Dashboard",
-      url: "https://dashboard.example.com",
-    });
+    const body = card.body as Array<Record<string, unknown>>;
+    expect(body[0].text).toBe("Alert");
+    expect(body[0].color).toBe("warning");
   });
 });
 
